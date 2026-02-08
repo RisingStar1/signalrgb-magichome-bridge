@@ -74,10 +74,24 @@ Magic Home's addressable WiFi controllers (model 0xA3) are cheap and widely avai
 
 ## Installation
 
+### From PyPI (recommended)
+
+```bash
+pip install signalrgb-magichome-bridge
+```
+
+For system tray support (Windows):
+
+```bash
+pip install signalrgb-magichome-bridge[tray]
+```
+
+### From source
+
 ```bash
 git clone https://github.com/RisingStar1/signalrgb-magichome-bridge.git
 cd signalrgb-magichome-bridge
-pip install -r requirements.txt
+pip install -e .
 ```
 
 ---
@@ -87,7 +101,7 @@ pip install -r requirements.txt
 ### 1. Find your controller
 
 ```bash
-python bridge.py --discover
+signalrgb-bridge --discover
 ```
 
 ```
@@ -99,13 +113,13 @@ Found 1 device(s):
   ------------------   -----------------    --------------------
   192.168.10.22        AABBCCDDEEFF         HF-LPB100-ZJ200
 
-Use: python bridge.py --ip <IP> --leds <COUNT>
+Use: signalrgb-bridge --ip <IP> --leds <COUNT>
 ```
 
 ### 2. Start the bridge
 
 ```bash
-python bridge.py --ip 192.168.10.22 --leds 300
+signalrgb-bridge --ip 192.168.10.22 --leds 300
 ```
 
 You should see:
@@ -166,7 +180,7 @@ Each hexagonal panel contains ~30 individually wired LEDs, but the Magic Home co
 1. **Start the bridge** with your total physical LED count:
 
    ```bash
-   python bridge.py --ip 192.168.10.22 --leds 300
+   signalrgb-bridge --ip 192.168.10.22 --leds 300
    ```
 
 2. The bridge **auto-detects** that the controller only has 10 addressable zones and logs it at startup:
@@ -227,7 +241,7 @@ cp config.example.json config.json
 Then just:
 
 ```bash
-python bridge.py
+signalrgb-bridge
 ```
 
 ---
@@ -265,13 +279,13 @@ Unregister-ScheduledTask -TaskName "SignalRGB-MagicHome Bridge" -Confirm:$false
 ### Option B: Manual tray mode
 
 ```bash
-pythonw tray.py --ip 192.168.10.22 --leds 300
+signalrgb-bridge-tray --ip 192.168.10.22 --leds 300
 ```
 
 ### Option C: Console mode (for debugging)
 
 ```bash
-python bridge.py --ip 192.168.10.22 --leds 300 --log-level DEBUG
+signalrgb-bridge --ip 192.168.10.22 --leds 300 --log-level DEBUG
 ```
 
 ---
@@ -296,14 +310,14 @@ python bridge.py --ip 192.168.10.22 --leds 300 --log-level DEBUG
 
 | File | Purpose |
 |---|---|
-| `bridge.py` | Main entry point — wires all components together |
-| `wled_emulator.py` | WLED HTTP JSON API + mDNS advertisement via zeroconf |
-| `ddp_receiver.py` | UDP pixel receiver — DNRGB, DDP, DRGB, WARLS protocols |
-| `magichome_client.py` | Persistent async TCP client with reconnect, throttling, zone mapping |
-| `protocol.py` | Magic Home 0xA3 binary packet construction (pure functions, no I/O) |
-| `discovery.py` | UDP broadcast controller discovery |
-| `config.py` | Configuration management (JSON + CLI args) |
-| `tray.py` | System tray wrapper using pystray |
+| `signalrgb_magichome_bridge/bridge.py` | Main entry point — wires all components together |
+| `signalrgb_magichome_bridge/wled_emulator.py` | WLED HTTP JSON API + mDNS advertisement via zeroconf |
+| `signalrgb_magichome_bridge/ddp_receiver.py` | UDP pixel receiver — DNRGB, DDP, DRGB, WARLS protocols |
+| `signalrgb_magichome_bridge/magichome_client.py` | Persistent async TCP client with reconnect, throttling, zone mapping |
+| `signalrgb_magichome_bridge/protocol.py` | Magic Home 0xA3 binary packet construction (pure functions, no I/O) |
+| `signalrgb_magichome_bridge/discovery.py` | UDP broadcast controller discovery |
+| `signalrgb_magichome_bridge/config.py` | Configuration management (JSON + CLI args) |
+| `signalrgb_magichome_bridge/tray.py` | System tray wrapper using pystray |
 | `install-task.ps1` | Windows Task Scheduler registration script |
 
 ---
@@ -311,7 +325,7 @@ python bridge.py --ip 192.168.10.22 --leds 300 --log-level DEBUG
 ## Running Tests
 
 ```bash
-pip install pytest pytest-aiohttp
+pip install -e ".[dev]"
 python -m pytest tests/ -v
 ```
 

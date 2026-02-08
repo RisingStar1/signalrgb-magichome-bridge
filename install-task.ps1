@@ -20,7 +20,7 @@ if (-not $pythonw) {
 Write-Host "Using: $pythonw"
 Write-Host "Bridge dir: $scriptDir"
 
-$argString = "tray.py $($BridgeArgs -join ' ')"
+$argString = "-m signalrgb_magichome_bridge.tray $($BridgeArgs -join ' ')"
 Write-Host "Arguments: $argString"
 
 $action = New-ScheduledTaskAction `

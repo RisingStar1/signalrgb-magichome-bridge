@@ -1,3 +1,6 @@
 @echo off
-cd /d "%~dp0"
-python bridge.py %*
+where signalrgb-bridge >nul 2>&1 && (
+    signalrgb-bridge %*
+) || (
+    python -m signalrgb_magichome_bridge %*
+)

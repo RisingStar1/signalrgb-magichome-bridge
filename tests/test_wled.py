@@ -1,17 +1,13 @@
 """Tests for WLED emulator HTTP API responses."""
 
 import asyncio
-import sys
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase, unittest_run_loop
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from wled_emulator import WLEDEmulator
+from signalrgb_magichome_bridge.wled_emulator import WLEDEmulator
 
 
 class TestWLEDAPI(AioHTTPTestCase):

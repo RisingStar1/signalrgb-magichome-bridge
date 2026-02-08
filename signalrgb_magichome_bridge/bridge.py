@@ -4,9 +4,9 @@ Wires the WLED emulator, DDP receiver, and Magic Home TCP client together.
 Runs a single asyncio event loop hosting all subsystems concurrently.
 
 Usage:
-    python bridge.py --discover
-    python bridge.py --ip 192.168.10.22 --leds 300
-    python bridge.py --ip 192.168.10.22 --leds 70 --fps 20 --http-port 8080
+    signalrgb-bridge --discover
+    signalrgb-bridge --ip 192.168.10.22 --leds 300
+    signalrgb-bridge --ip 192.168.10.22 --leds 70 --fps 20 --http-port 8080
 """
 
 import asyncio
@@ -14,11 +14,11 @@ import logging
 import sys
 from typing import Optional
 
-from config import BridgeConfig
-from ddp_receiver import PixelReceiver
-from discovery import discover_devices
-from magichome_client import MagicHomeClient
-from wled_emulator import WLEDEmulator
+from .config import BridgeConfig
+from .ddp_receiver import PixelReceiver
+from .discovery import discover_devices
+from .magichome_client import MagicHomeClient
+from .wled_emulator import WLEDEmulator
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +165,7 @@ async def async_main() -> None:
             print(f"  {'-'*18:<20} {'-'*17:<20} {'-'*20}")
             for ip, mac, model in devices:
                 print(f"  {ip:<20} {mac:<20} {model}")
-            print(f"\nUse: python bridge.py --ip <IP> --leds <COUNT>")
+            print(f"\nUse: signalrgb-bridge --ip <IP> --leds <COUNT>")
         else:
             print("No Magic Home devices found on the network.")
             print("Make sure the controller is powered on and connected to WiFi.")
@@ -176,10 +176,10 @@ async def async_main() -> None:
         print("Error: Magic Home controller IP is required.")
         print("")
         print("  Use --discover to find controllers on your network:")
-        print("    python bridge.py --discover")
+        print("    signalrgb-bridge --discover")
         print("")
         print("  Or specify the IP directly:")
-        print("    python bridge.py --ip 192.168.10.22 --leds 300")
+        print("    signalrgb-bridge --ip 192.168.10.22 --leds 300")
         sys.exit(1)
 
     bridge = Bridge(config)

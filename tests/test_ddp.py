@@ -1,12 +1,8 @@
 """Tests for DDP packet parsing and frame assembly."""
 
 import struct
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from ddp_receiver import PixelReceiver, DDP_HEADER_SIZE
+from signalrgb_magichome_bridge.ddp_receiver import PixelReceiver, DDP_HEADER_SIZE
 
 
 def _make_ddp_packet(

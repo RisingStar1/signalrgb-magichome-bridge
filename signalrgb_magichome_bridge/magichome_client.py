@@ -14,7 +14,7 @@ import socket
 import time
 from typing import Optional
 
-from protocol import (
+from .protocol import (
     build_power_off,
     build_power_on,
     build_state_query,

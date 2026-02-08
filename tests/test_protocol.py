@@ -4,12 +4,8 @@ Verified against flux_led library output for byte-exact correctness.
 """
 
 import struct
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from protocol import (
+from signalrgb_magichome_bridge.protocol import (
     checksum,
     wrap_message,
     build_zone_change,

@@ -6,8 +6,6 @@ with status info and quit option.
 
 import sys
 import threading
-import time
-from pathlib import Path
 
 from PIL import Image, ImageDraw
 from pystray import Icon, Menu, MenuItem
@@ -49,12 +47,10 @@ class BridgeTray:
             self._icon.icon = self._create_icon_image("green")
             self._icon.title = "MagicHome Bridge - Running"
 
-        script_dir = Path(__file__).resolve().parent
-        args = [sys.executable, str(script_dir / "bridge.py")] + sys.argv[1:]
+        args = [sys.executable, "-m", "signalrgb_magichome_bridge"] + sys.argv[1:]
         try:
             self._bridge_process = subprocess.Popen(
                 args,
-                cwd=str(script_dir),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW,
@@ -107,7 +103,10 @@ class BridgeTray:
         self._icon.run()
 
 
-if __name__ == "__main__":
-    # Pass bridge args through: python tray.py --ip 192.168.10.22 --leds 300 --http-port 80
+def main():
     tray = BridgeTray()
     tray.run()
+
+
+if __name__ == "__main__":
+    main()
