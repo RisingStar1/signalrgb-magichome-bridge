@@ -246,10 +246,10 @@ The bridge can run at logon as a system tray icon — no console window.
 
 ### Option A: Scheduled Task (recommended)
 
-Run as **Administrator** in PowerShell:
+Run as **Administrator**:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File install-task.ps1 --ip 192.168.10.22 --leds 300
+```bash
+signalrgb-bridge-install --ip 192.168.10.22 --leds 300
 ```
 
 This registers a task that:
@@ -260,14 +260,14 @@ This registers a task that:
 
 To start immediately without rebooting:
 
-```powershell
-Start-ScheduledTask -TaskName "SignalRGB-MagicHome Bridge"
+```bash
+signalrgb-bridge-install --start
 ```
 
 To uninstall:
 
-```powershell
-Unregister-ScheduledTask -TaskName "SignalRGB-MagicHome Bridge" -Confirm:$false
+```bash
+signalrgb-bridge-install --uninstall
 ```
 
 ### Option B: Manual tray mode

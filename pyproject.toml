@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "signalrgb-magichome-bridge"
-version = "1.0.1"
+version = "1.1.0"
 description = "Use SignalRGB to control Magic Home WiFi SPI LED controllers in real-time"
 readme = "README.md"
 license = "MIT"
@@ -37,3 +37,4 @@ Issues = "https://github.com/RisingStar1/signalrgb-magichome-bridge/issues"
 [project.scripts]
 signalrgb-bridge = "signalrgb_magichome_bridge.bridge:main"
 signalrgb-bridge-tray = "signalrgb_magichome_bridge.tray:main"
+signalrgb-bridge-install = "signalrgb_magichome_bridge.install:main"
