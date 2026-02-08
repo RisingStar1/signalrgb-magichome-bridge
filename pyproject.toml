@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "signalrgb-magichome-bridge"
-version = "1.0.0"
+version = "1.0.1"
 description = "Use SignalRGB to control Magic Home WiFi SPI LED controllers in real-time"
 readme = "README.md"
 license = "MIT"
@@ -22,10 +22,11 @@ dependencies = [
     "aiohttp>=3.9,<4",
     "zeroconf>=0.131",
     "flux_led>=1.0",
+    "pystray>=0.19",
+    "Pillow>=10.0",
 ]
 
 [project.optional-dependencies]
-tray = ["pystray>=0.19", "Pillow>=10.0"]
 dev = ["pytest", "pytest-aiohttp"]
 
 [project.urls]

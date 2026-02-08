@@ -80,12 +80,6 @@ Magic Home's addressable WiFi controllers (model 0xA3) are cheap and widely avai
 pip install signalrgb-magichome-bridge
 ```
 
-For system tray support (Windows):
-
-```bash
-pip install signalrgb-magichome-bridge[tray]
-```
-
 ### From source
 
 ```bash
