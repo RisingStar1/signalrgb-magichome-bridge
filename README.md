@@ -75,7 +75,7 @@ Magic Home's addressable WiFi controllers (model 0xA3) are cheap and widely avai
 ## Installation
 
 ```bash
-git clone https://github.com/YourUsername/signalrgb-magichome-bridge.git
+git clone https://github.com/RisingStar1/signalrgb-magichome-bridge.git
 cd signalrgb-magichome-bridge
 pip install -r requirements.txt
 ```
@@ -129,6 +129,61 @@ Bridge is READY. Waiting for SignalRGB to connect...
 2. The bridge appears as a WLED device named **"MagicHome Bridge"**
 3. Click on it, map it to your canvas layout
 4. Apply any effect — pixels stream to your LEDs in real-time
+
+---
+
+## Example: Hexagonal LED Panels
+
+This bridge was originally built to control **hexagonal LED wall panels** (like Nanoleaf-style hex lights) powered by a Magic Home WiFi SPI controller. Here's how that setup works:
+
+### The Setup
+
+```
+Magic Home 0xA3 Controller ──[SPI]──► 10 Hexagonal LED Panels (daisy-chained)
+         ▲                             Each panel = ~30 LEDs wired in series
+         │ TCP :5577                   Total: 300 physical LEDs
+         │
+    WiFi Network
+         │
+    This Bridge (on your PC)
+         ▲
+         │ UDP :4048
+         │
+    SignalRGB
+```
+
+Each hexagonal panel contains ~30 individually wired LEDs, but the Magic Home controller treats each panel as **one addressable zone**. The controller has 10 zones (`pixels_per_segment=10`), one per panel — this is a firmware limitation, not a bridge limitation.
+
+### What This Means in Practice
+
+- **10 zones = 10 independent colors** — Each hexagonal panel lights up as a single solid color
+- **Rainbow effects work** — A rainbow spread across your 10 panels shows 10 distinct colors, shifting smoothly over time
+- **Audio-reactive effects work** — Panels react to music with per-panel color changes
+- **You won't get per-LED gradients within a single panel** — All 30 LEDs inside one hexagon show the same color
+
+### How to Set It Up
+
+1. **Start the bridge** with your total physical LED count:
+
+   ```bash
+   python bridge.py --ip 192.168.10.22 --leds 300
+   ```
+
+2. The bridge **auto-detects** that the controller only has 10 addressable zones and logs it at startup:
+
+   ```
+   Controller config: 10 points (pixels_per_segment), 10 segments
+   ```
+
+3. **In SignalRGB**, add the device and set it to **300 LEDs** (matching `--leds`). Map it on the canvas to cover your wall layout.
+
+4. SignalRGB sends 300 pixels of color data. The bridge **downsamples** this to 10 zone colors by sampling the center pixel of each 30-pixel group. This gives the truest color match to what SignalRGB previews on screen.
+
+### Tips for Hex Panel Users
+
+- **Layout matters** — In SignalRGB's canvas editor, arrange the device strip to roughly match how your hex panels are physically mounted. This way the rainbow direction and effect flow match your wall.
+- **Use wide effects** — Effects with broad color gradients (Rainbow Wave, Color Cycle, Gradient) look best. Fine-grained effects (Matrix rain, detailed patterns) will be simplified to 10 colors.
+- **Lower FPS is fine** — With only 10 zones, `--fps 20` is plenty. The color transitions are smooth since each zone is a solid color anyway.
 
 ---
 
