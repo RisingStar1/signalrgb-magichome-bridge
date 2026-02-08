@@ -1,0 +1,8 @@
+{
+    "magic_home_ip": "192.168.1.100",
+    "num_leds": 300,
+    "max_fps": 30,
+    "wled_name": "MagicHome Bridge",
+    "wled_http_port": 80,
+    "log_level": "INFO"
+}

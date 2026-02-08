@@ -1,0 +1,5 @@
+aiohttp>=3.9,<4
+zeroconf>=0.131
+flux_led>=1.0
+pystray>=0.19
+Pillow>=10.0
