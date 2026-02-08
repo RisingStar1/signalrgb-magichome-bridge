@@ -6,35 +6,114 @@ Magic Home's addressable WiFi controllers (model 0xA3) are cheap and widely avai
 
 ---
 
+## Quick Start
+
+**Install** the bridge, **find** your controller, **run** it. Three steps, two minutes.
+
+### 1. Install
+
+```bash
+pip install signalrgb-magichome-bridge
+```
+
+### 2. Find your controller
+
+```bash
+signalrgb-bridge --discover
+```
+
+```
+Searching for Magic Home controllers on the network...
+
+Found 1 device(s):
+
+  IP Address           MAC Address          Model
+  ------------------   -----------------    --------------------
+  192.168.10.22        AABBCCDDEEFF         HF-LPB100-ZJ200
+
+Use: signalrgb-bridge --ip <IP> --leds <COUNT>
+```
+
+### 3. Start the bridge
+
+```bash
+signalrgb-bridge --ip 192.168.10.22 --leds 300
+```
+
+```
+============================================================
+SignalRGB-to-MagicHome Bridge
+============================================================
+  Magic Home : 192.168.10.22:5577
+  LEDs       : 300
+  Max FPS    : 30
+  WLED HTTP  : http://192.168.1.50:80
+  DDP Port   : 4048
+============================================================
+Bridge is READY. Waiting for SignalRGB to connect...
+```
+
+Now open **SignalRGB** &rarr; **Devices**. The bridge appears as a WLED device named **"MagicHome Bridge"**. Click on it, map it to your canvas, apply any effect — pixels stream to your LEDs in real-time.
+
+---
+
+## Run at Startup (Windows)
+
+Want the bridge running every time you log in — silently, in the system tray, no console window?
+
+```bash
+signalrgb-bridge-install --ip 192.168.10.22 --leds 300
+```
+
+> Run this as **Administrator**. It registers a Windows scheduled task.
+
+That's it. On every logon:
+- A hexagon tray icon appears in your system tray
+- The bridge starts automatically in the background
+- If it crashes, Windows restarts it (up to 3 times)
+- Right-click the tray icon &rarr; **Quit** to stop
+
+To start the task right now (without rebooting):
+
+```bash
+signalrgb-bridge-install --start
+```
+
+To remove it:
+
+```bash
+signalrgb-bridge-install --uninstall
+```
+
+---
+
 ## How It Works
 
 ```
-                          Your PC                              WiFi Network
-                ┌─────────────────────────┐              ┌─────────────────────┐
-                │                         │   mDNS       │                     │
-                │  SignalRGB  ────────────────────────►   │  Bridge             │
-                │             ◄────────────────────────   │  (this app)         │
-                │                         │   WLED HTTP   │                     │
-                │                         │              │         │            │
-                │  SignalRGB  ─── UDP ────────────────►   │  Pixel Receiver     │
-                │             (DNRGB/DDP) │   :4048      │         │            │
-                │                         │              │    Frame Buffer      │
-                │                         │              │    (latest wins)     │
-                │                         │              │         │            │
-                └─────────────────────────┘              │  Magic Home Client   │
-                                                         │         │ TCP :5577  │
-                                                         └─────────┼───────────┘
-                                                                   │
-                                                         ┌─────────▼───────────┐
-                                                         │  Magic Home 0xA3    │
-                                                         │  WiFi Controller    │
-                                                         │         │ SPI       │
-                                                         │    LED Strip /      │
-                                                         │    Hex Panels       │
-                                                         └─────────────────────┘
+                      Your PC                              WiFi Network
+            ┌─────────────────────────┐              ┌─────────────────────┐
+            │                         │   mDNS       │                     │
+            │  SignalRGB  ────────────────────────►   │  Bridge             │
+            │             ◄────────────────────────   │  (this app)         │
+            │                         │   WLED HTTP   │                     │
+            │                         │              │         │            │
+            │  SignalRGB  ─── UDP ────────────────►   │  Pixel Receiver     │
+            │             (DNRGB/DDP) │   :4048      │         │            │
+            │                         │              │    Frame Buffer      │
+            │                         │              │    (latest wins)     │
+            │                         │              │         │            │
+            └─────────────────────────┘              │  Magic Home Client   │
+                                                     │         │ TCP :5577  │
+                                                     └─────────┼───────────┘
+                                                               │
+                                                     ┌─────────▼───────────┐
+                                                     │  Magic Home 0xA3    │
+                                                     │  WiFi Controller    │
+                                                     │         │ SPI       │
+                                                     │    LED Strip /      │
+                                                     │    Hex Panels       │
+                                                     └─────────────────────┘
 ```
-
-**Step by step:**
 
 1. **Discovery** — The bridge advertises itself via mDNS as a WLED device (`_wled._tcp`). SignalRGB finds it automatically, just like a real WLED controller.
 
@@ -53,11 +132,11 @@ Magic Home's addressable WiFi controllers (model 0xA3) are cheap and widely avai
 - **Zero-config discovery** — mDNS advertisement, SignalRGB finds the bridge automatically
 - **Full WLED protocol support** — DNRGB, DDP, DRGB, WARLS auto-detected from packet headers
 - **Auto zone detection** — Queries the controller for its `pixels_per_segment` and downsamples accordingly
-- **Persistent TCP with auto-reconnect** — Exponential backoff (1s → 8s), transparent to SignalRGB
+- **Persistent TCP with auto-reconnect** — Exponential backoff (1s &rarr; 8s), transparent to SignalRGB
 - **Frame throttling** — Configurable max FPS with latest-frame-wins strategy
 - **Power control passthrough** — SignalRGB on/off commands forwarded to the controller with debounce
-- **System tray mode** — Runs as a Windows tray icon (no console window)
-- **Scheduled task installer** — One-command auto-start on Windows logon
+- **System tray mode** — Runs as a Windows tray icon with status indicator
+- **One-command auto-start** — `signalrgb-bridge-install` sets up a Windows scheduled task
 - **Controller discovery** — Find Magic Home controllers on your network via UDP broadcast
 
 ---
@@ -69,74 +148,6 @@ Magic Home's addressable WiFi controllers (model 0xA3) are cheap and widely avai
 - **SignalRGB** — installed on the same LAN
 
 > **Note:** This bridge works with Magic Home controllers that use the 0xA3 addressable protocol. These are typically the WiFi SPI controllers for addressable LED strips (WS2812B, WS2811, etc.) sold under brands like Magic Home, MagicLight, or Zengge. If your controller shows up in the Magic Home app with individually addressable LEDs, it's likely compatible.
-
----
-
-## Installation
-
-### From PyPI (recommended)
-
-```bash
-pip install signalrgb-magichome-bridge
-```
-
-### From source
-
-```bash
-git clone https://github.com/RisingStar1/signalrgb-magichome-bridge.git
-cd signalrgb-magichome-bridge
-pip install -e .
-```
-
----
-
-## Quick Start
-
-### 1. Find your controller
-
-```bash
-signalrgb-bridge --discover
-```
-
-```
-Searching for Magic Home controllers on the network...
-
-Found 1 device(s):
-
-  IP Address           MAC Address          Model
-  ------------------   -----------------    --------------------
-  192.168.10.22        AABBCCDDEEFF         HF-LPB100-ZJ200
-
-Use: signalrgb-bridge --ip <IP> --leds <COUNT>
-```
-
-### 2. Start the bridge
-
-```bash
-signalrgb-bridge --ip 192.168.10.22 --leds 300
-```
-
-You should see:
-
-```
-============================================================
-SignalRGB-to-MagicHome Bridge
-============================================================
-  Magic Home : 192.168.10.22:5577
-  LEDs       : 300
-  Max FPS    : 30
-  WLED HTTP  : http://192.168.1.50:80
-  DDP Port   : 4048
-============================================================
-Bridge is READY. Waiting for SignalRGB to connect...
-```
-
-### 3. Connect in SignalRGB
-
-1. Open **SignalRGB** → **Devices**
-2. The bridge appears as a WLED device named **"MagicHome Bridge"**
-3. Click on it, map it to your canvas layout
-4. Apply any effect — pixels stream to your LEDs in real-time
 
 ---
 
@@ -240,50 +251,6 @@ signalrgb-bridge
 
 ---
 
-## Auto-Start on Windows
-
-The bridge can run at logon as a system tray icon — no console window.
-
-### Option A: Scheduled Task (recommended)
-
-Run as **Administrator**:
-
-```bash
-signalrgb-bridge-install --ip 192.168.10.22 --leds 300
-```
-
-This registers a task that:
-- Starts at logon using `pythonw.exe` (no console window)
-- Shows a hexagon tray icon with status
-- Auto-restarts up to 3 times on crash
-- Right-click the tray icon → Quit to stop
-
-To start immediately without rebooting:
-
-```bash
-signalrgb-bridge-install --start
-```
-
-To uninstall:
-
-```bash
-signalrgb-bridge-install --uninstall
-```
-
-### Option B: Manual tray mode
-
-```bash
-signalrgb-bridge-tray --ip 192.168.10.22 --leds 300
-```
-
-### Option C: Console mode (for debugging)
-
-```bash
-signalrgb-bridge --ip 192.168.10.22 --leds 300 --log-level DEBUG
-```
-
----
-
 ## Troubleshooting
 
 | Problem | Solution |
@@ -291,28 +258,27 @@ signalrgb-bridge --ip 192.168.10.22 --leds 300 --log-level DEBUG
 | **Device not found in SignalRGB** | Check Windows Firewall allows inbound UDP 4048 and TCP 80. Try `--http-port 8080` if port 80 is blocked. |
 | **"Connection refused" to controller** | Verify the IP with `--discover`. Make sure the controller is powered on and on the same subnet. |
 | **Port 80 requires admin** | Use `--http-port 8080` instead. SignalRGB can find the device via mDNS regardless of port. |
-| **All LEDs show the same color** | This means the controller has fewer addressable zones than your LED count. The bridge auto-detects zones — check the startup log for "Controller config: N points". Each zone is one color. |
+| **All LEDs show the same color** | The controller has fewer addressable zones than your LED count. The bridge auto-detects zones — check the startup log for "Controller config: N points". Each zone is one color. |
 | **Flickering or stuttering** | Reduce `--fps` to 15-20. Check WiFi signal quality to the controller. |
 | **High latency** | Magic Home uses TCP over WiFi — expect 30-100ms. Reduce `--fps` to reduce queuing. |
 | **LEDs show wrong colors** | Verify `--leds` matches your actual LED count. Check LED wiring order in the Magic Home app. |
 | **mDNS discovery fails** | Some networks block multicast. In SignalRGB, add the device manually by entering your PC's LAN IP. |
-| **Bridge crashes when switching SignalRGB presets** | This was a known issue fixed in the current version via power command debounce and serialized TCP writes. Make sure you're running the latest code. |
 
 ---
 
 ## Architecture
 
-| File | Purpose |
+| Module | Purpose |
 |---|---|
-| `signalrgb_magichome_bridge/bridge.py` | Main entry point — wires all components together |
-| `signalrgb_magichome_bridge/wled_emulator.py` | WLED HTTP JSON API + mDNS advertisement via zeroconf |
-| `signalrgb_magichome_bridge/ddp_receiver.py` | UDP pixel receiver — DNRGB, DDP, DRGB, WARLS protocols |
-| `signalrgb_magichome_bridge/magichome_client.py` | Persistent async TCP client with reconnect, throttling, zone mapping |
-| `signalrgb_magichome_bridge/protocol.py` | Magic Home 0xA3 binary packet construction (pure functions, no I/O) |
-| `signalrgb_magichome_bridge/discovery.py` | UDP broadcast controller discovery |
-| `signalrgb_magichome_bridge/config.py` | Configuration management (JSON + CLI args) |
-| `signalrgb_magichome_bridge/tray.py` | System tray wrapper using pystray |
-| `install-task.ps1` | Windows Task Scheduler registration script |
+| `bridge.py` | Main entry point — wires all components together |
+| `wled_emulator.py` | WLED HTTP JSON API + mDNS advertisement via zeroconf |
+| `ddp_receiver.py` | UDP pixel receiver — DNRGB, DDP, DRGB, WARLS protocols |
+| `magichome_client.py` | Persistent async TCP client with reconnect, throttling, zone mapping |
+| `protocol.py` | Magic Home 0xA3 binary packet construction (pure functions, no I/O) |
+| `discovery.py` | UDP broadcast controller discovery |
+| `config.py` | Configuration management (JSON + CLI args) |
+| `tray.py` | System tray wrapper using pystray |
+| `install.py` | Windows auto-start scheduled task registration |
 
 ---
 
@@ -332,7 +298,6 @@ python -m pytest tests/ -v
 - **Addressable zones** — Some controllers only support a limited number of independently addressable zones (e.g., 10 zones for hex panel setups). The bridge auto-detects this and downsamples. Each zone displays one color.
 - **Model support** — Only 0xA3 (Addressable v3) controllers. Legacy models use different protocols.
 - **Single controller** — One bridge instance controls one controller. Run multiple instances on different `--http-port` values for multiple controllers.
-- **Windows tray** — The system tray feature (`tray.py`) is Windows-specific. The core bridge (`bridge.py`) works on any platform.
 
 ---
 
