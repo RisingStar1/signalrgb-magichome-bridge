@@ -1,5 +1,9 @@
 # SignalRGB &rarr; Magic Home Bridge
 
+[![Publish to PyPI](https://github.com/RisingStar1/signalrgb-magichome-bridge/actions/workflows/publish.yml/badge.svg)](https://github.com/RisingStar1/signalrgb-magichome-bridge/actions/workflows/publish.yml)
+
+**`pip install signalrgb-magichome-bridge` → run one command → your Magic Home LEDs show up in SignalRGB.**
+
 > Use **SignalRGB** to control **Magic Home WiFi SPI LED controllers** in real-time — rainbow waves, audio-reactive effects, game integrations, and every other SignalRGB effect on your Magic Home LED strips and panels.
 
 Magic Home's addressable WiFi controllers (model 0xA3) are cheap and widely available, but SignalRGB doesn't support them natively. This bridge fixes that by emulating a WLED device on your LAN. SignalRGB discovers it automatically, streams pixel data over UDP, and the bridge translates every frame into Magic Home's native TCP protocol — no flashing, no custom firmware, fully reversible.
