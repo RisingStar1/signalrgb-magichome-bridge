@@ -39,13 +39,17 @@ class BridgeTray:
         draw.text((18, 22), "MH", fill=(255, 255, 255))
         return img
 
+    def _update_icon(self, color, title, status):
+        """Thread-safe icon update."""
+        self._status = status
+        if self._icon:
+            self._icon.icon = self._create_icon_image(color)
+            self._icon.title = title
+
     def _run_bridge(self):
         """Run the bridge in a subprocess."""
         import subprocess
-        self._status = "Running"
-        if self._icon:
-            self._icon.icon = self._create_icon_image("green")
-            self._icon.title = "MagicHome Bridge - Running"
+        import time
 
         args = [sys.executable, "-m", "signalrgb_magichome_bridge"] + sys.argv[1:]
         try:
@@ -55,16 +59,20 @@ class BridgeTray:
                 stderr=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
+            # Wait a moment for the process to start (or crash immediately)
+            time.sleep(3)
+            if self._bridge_process.poll() is None:
+                # Process is still running — mark as green
+                self._update_icon("green", "MagicHome Bridge - Running", "Running")
+            else:
+                self._update_icon("red", "MagicHome Bridge - Failed to start", "Failed to start")
+                return
+
             self._bridge_process.wait()
             if self._status != "Quitting":
-                self._status = "Stopped (crashed)"
-                if self._icon:
-                    self._icon.icon = self._create_icon_image("red")
-                    self._icon.title = "MagicHome Bridge - Stopped"
+                self._update_icon("red", "MagicHome Bridge - Stopped", "Stopped (crashed)")
         except Exception as e:
-            self._status = f"Error: {e}"
-            if self._icon:
-                self._icon.icon = self._create_icon_image("red")
+            self._update_icon("red", f"MagicHome Bridge - Error", f"Error: {e}")
 
     def _on_quit(self, icon, item):
         self._status = "Quitting"

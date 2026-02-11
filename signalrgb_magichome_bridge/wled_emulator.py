@@ -53,6 +53,8 @@ class WLEDEmulator:
         self._runner: Optional[web.AppRunner] = None
         self._zeroconf: Optional[Zeroconf] = None
         self._service_info: Optional[ServiceInfo] = None
+        self._http_service_info: Optional[ServiceInfo] = None
+        self._mdns_refresh_task: Optional[asyncio.Task] = None
 
     def _generate_mac(self) -> str:
         """Generate a stable fake MAC address based on machine hostname."""
@@ -136,7 +138,10 @@ class WLEDEmulator:
                     "pwr": 0,
                     "maxpwr": 0,
                     "maxseg": 1,
+                    "lc": 1,
+                    "seglc": [self._num_leds],
                 },
+                "str": False,
                 "name": self._name,
                 "udpport": 4048,
                 "live": is_live,
@@ -145,10 +150,20 @@ class WLEDEmulator:
                 "ws": 0,
                 "fxcount": 1,
                 "palcount": 1,
+                "wifi": {
+                    "bssid": "",
+                    "rssi": -50,
+                    "signal": 80,
+                    "channel": 1,
+                },
+                "fs": {"u": 0, "t": 0, "pmt": 0},
+                "ndc": 0,
                 "arch": "esp32",
                 "core": "v4.4.7",
+                "lwip": 0,
                 "freeheap": 200000,
                 "uptime": uptime,
+                "opt": 0,
                 "brand": "WLED",
                 "product": "FOSS",
                 "mac": self._mac,
@@ -219,25 +234,78 @@ class WLEDEmulator:
     # ── mDNS ─────────────────────────────────────────────────────────────
 
     async def _register_mdns(self) -> None:
-        """Register mDNS services for WLED discovery."""
+        """Register mDNS services for WLED discovery.
+
+        Real WLED registers two services:
+          1. _wled._tcp  — with a TXT record containing the MAC address
+          2. _http._tcp  — standard HTTP service
+
+        SignalRGB uses the MAC from the TXT record to recognize a previously
+        paired device across restarts.  Without it every restart looks like
+        a brand-new device and the pairing is lost.
+        """
         ip_bytes = socket.inet_aton(self._local_ip)
         server_name = f"wled-{self._mac[:6]}.local."
 
+        # _wled._tcp with MAC TXT record (matches real WLED firmware)
         self._service_info = ServiceInfo(
             type_="_wled._tcp.local.",
             name=f"{self._name}._wled._tcp.local.",
             addresses=[ip_bytes],
             port=self._http_port,
             server=server_name,
+            properties={"mac": self._mac},
         )
+
+        # _http._tcp (real WLED also advertises this)
+        self._http_service_info = ServiceInfo(
+            type_="_http._tcp.local.",
+            name=f"{self._name}._http._tcp.local.",
+            addresses=[ip_bytes],
+            port=self._http_port,
+            server=server_name,
+        )
+
         self._zeroconf = Zeroconf()
         await asyncio.to_thread(self._zeroconf.register_service, self._service_info)
-        logger.info("mDNS: registered %s on %s:%d", self._name, self._local_ip, self._http_port)
+        await asyncio.to_thread(self._zeroconf.register_service, self._http_service_info)
+        logger.info("mDNS: registered %s on %s:%d (mac=%s)", self._name, self._local_ip, self._http_port, self._mac)
+
+        # Periodic re-announcement so SignalRGB finds us after restart
+        self._mdns_refresh_task = asyncio.create_task(self._mdns_refresh_loop())
+
+    async def _mdns_refresh_loop(self) -> None:
+        """Re-announce mDNS services every 60 seconds.
+
+        Windows mDNS can be unreliable — periodic re-announcement ensures
+        SignalRGB's mDNS browser gets a fresh response when it restarts.
+        """
+        try:
+            while True:
+                await asyncio.sleep(60)
+                if self._zeroconf and self._service_info:
+                    try:
+                        await asyncio.to_thread(
+                            self._zeroconf.update_service, self._service_info
+                        )
+                    except Exception as e:
+                        logger.debug("mDNS refresh: %s", e)
+        except asyncio.CancelledError:
+            pass
 
     async def _unregister_mdns(self) -> None:
         """Unregister mDNS services."""
+        if self._mdns_refresh_task:
+            self._mdns_refresh_task.cancel()
+            try:
+                await self._mdns_refresh_task
+            except asyncio.CancelledError:
+                pass
+            self._mdns_refresh_task = None
         if self._zeroconf and self._service_info:
             await asyncio.to_thread(self._zeroconf.unregister_service, self._service_info)
+        if self._zeroconf and self._http_service_info:
+            await asyncio.to_thread(self._zeroconf.unregister_service, self._http_service_info)
         if self._zeroconf:
             await asyncio.to_thread(self._zeroconf.close)
             self._zeroconf = None
