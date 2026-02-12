@@ -148,6 +148,24 @@ class Bridge:
             await self.stop()
 
 
+def _windows_rotator(source: str, dest: str) -> None:
+    """Rotate log files on Windows where open files can't be renamed.
+
+    Deletes the destination first to avoid WinError 32 when another
+    process (tail, editor) holds the backup file open.  Falls back to
+    truncation if deletion also fails.
+    """
+    import os
+    try:
+        if os.path.exists(dest):
+            os.remove(dest)
+        os.rename(source, dest)
+    except OSError:
+        # Last resort: truncate the current log so we don't grow unbounded
+        with open(source, "w", encoding="utf-8"):
+            pass
+
+
 def setup_logging(level: str) -> None:
     log_level = getattr(logging, level.upper(), logging.INFO)
     fmt = "%(asctime)s [%(levelname)-7s] %(name)s: %(message)s"
@@ -156,11 +174,12 @@ def setup_logging(level: str) -> None:
     # Always log to a file so tray-mode output isn't lost
     from pathlib import Path
     log_file = Path.home() / "signalrgb-bridge.log"
-    handlers: list[logging.Handler] = [
-        RotatingFileHandler(
-            log_file, maxBytes=1_000_000, backupCount=1, encoding="utf-8"
-        ),
-    ]
+    file_handler = RotatingFileHandler(
+        log_file, maxBytes=1_000_000, backupCount=1, encoding="utf-8"
+    )
+    if sys.platform == "win32":
+        file_handler.rotator = _windows_rotator
+    handlers: list[logging.Handler] = [file_handler]
     # Also log to console when stderr is available (not tray mode)
     try:
         if sys.stderr and sys.stderr.fileno() >= 0:
