@@ -39,6 +39,7 @@ class Bridge:
             host=config.magic_home_ip,
             port=config.magic_home_port,
             max_fps=config.max_fps,
+            color_order=config.color_order,
         )
 
         self._ddp = PixelReceiver(
@@ -82,6 +83,7 @@ class Bridge:
         logger.info("  Magic Home : %s:%d", cfg.magic_home_ip, cfg.magic_home_port)
         logger.info("  LEDs       : %d", cfg.num_leds)
         logger.info("  Max FPS    : %d", cfg.max_fps)
+        logger.info("  Color Order: %s", cfg.color_order)
         logger.info("  WLED HTTP  : http://%s:%d", local_ip, cfg.wled_http_port)
         logger.info("  DDP Port   : %d", cfg.ddp_port)
         logger.info("=" * 60)
@@ -131,10 +133,13 @@ class Bridge:
                 if self._ddp.is_receiving:
                     stats = self._ddp.stats
                     logger.info(
-                        "Stats: DDP frames=%d, MH sent=%d, MH errors=%d",
+                        "Stats: DDP frames=%d, MH sent=%d, MH errors=%d, "
+                        "dedup_skipped=%d, health=%s",
                         stats["frames_completed"],
                         self._magic_home.frames_sent,
                         self._magic_home.send_errors,
+                        self._magic_home.frames_skipped_dedup,
+                        self._magic_home.health_status,
                     )
         except asyncio.CancelledError:
             pass
@@ -143,10 +148,28 @@ class Bridge:
 
 
 def setup_logging(level: str) -> None:
+    log_level = getattr(logging, level.upper(), logging.INFO)
+    fmt = "%(asctime)s [%(levelname)-7s] %(name)s: %(message)s"
+    datefmt = "%H:%M:%S"
+
+    # Always log to a file so tray-mode output isn't lost
+    from pathlib import Path
+    log_file = Path.home() / "signalrgb-bridge.log"
+    handlers: list[logging.Handler] = [
+        logging.FileHandler(log_file, encoding="utf-8"),
+    ]
+    # Also log to console when stderr is available (not tray mode)
+    try:
+        if sys.stderr and sys.stderr.fileno() >= 0:
+            handlers.append(logging.StreamHandler())
+    except (OSError, ValueError):
+        pass
+
     logging.basicConfig(
-        level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s [%(levelname)-7s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
+        level=log_level,
+        format=fmt,
+        datefmt=datefmt,
+        handlers=handlers,
     )
 
 

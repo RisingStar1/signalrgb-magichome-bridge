@@ -13,7 +13,8 @@ class BridgeConfig:
     magic_home_ip: str = ""
     magic_home_port: int = 5577
     num_leds: int = 300
-    max_fps: int = 30
+    max_fps: int = 5
+    color_order: str = "auto"
     wled_name: str = "MagicHome Bridge"
     wled_http_port: int = 80
     bind_ip: str = "0.0.0.0"
@@ -52,7 +53,8 @@ class BridgeConfig:
         parser.add_argument("--ip", dest="magic_home_ip", help="Magic Home controller IP address")
         parser.add_argument("--port", dest="magic_home_port", type=int, help="Magic Home TCP port (default: 5577)")
         parser.add_argument("--leds", dest="num_leds", type=int, help="Number of addressable LEDs (default: 300)")
-        parser.add_argument("--fps", dest="max_fps", type=int, help="Max frames per second to controller (default: 30)")
+        parser.add_argument("--fps", dest="max_fps", type=int, help="Max frames per second to controller (default: 5)")
+        parser.add_argument("--color-order", dest="color_order", choices=["auto", "RGB", "GRB", "BRG", "BGR"], help="LED color byte order (default: auto-detect)")
         parser.add_argument("--name", dest="wled_name", help='WLED device name shown in SignalRGB (default: "MagicHome Bridge")')
         parser.add_argument("--http-port", dest="wled_http_port", type=int, help="HTTP port for WLED API (default: 80)")
         parser.add_argument("--bind", dest="bind_ip", help="Bind address for listeners (default: 0.0.0.0)")

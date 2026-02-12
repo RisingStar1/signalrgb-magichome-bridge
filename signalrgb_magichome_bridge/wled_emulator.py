@@ -57,10 +57,13 @@ class WLEDEmulator:
         self._mdns_refresh_task: Optional[asyncio.Task] = None
 
     def _generate_mac(self) -> str:
-        """Generate a stable fake MAC address based on machine hostname."""
+        """Generate a stable fake MAC address based on machine hostname.
+
+        Returns uppercase hex to match real WLED firmware format.
+        """
         hostname = socket.gethostname()
         h = hashlib.md5(hostname.encode()).hexdigest()
-        return h[:12]
+        return h[:12].upper()
 
     # ── HTTP Route Handlers ──────────────────────────────────────────────
 
@@ -275,23 +278,36 @@ class WLEDEmulator:
         self._mdns_refresh_task = asyncio.create_task(self._mdns_refresh_loop())
 
     async def _mdns_refresh_loop(self) -> None:
-        """Re-announce mDNS services every 60 seconds.
+        """Re-announce mDNS services periodically.
 
-        Windows mDNS can be unreliable — periodic re-announcement ensures
-        SignalRGB's mDNS browser gets a fresh response when it restarts.
+        Sends an initial burst of 3 announcements (at 3s intervals) so
+        SignalRGB's mDNS browser picks us up quickly on startup, then
+        continues every 30 seconds.  Refreshes BOTH _wled._tcp and
+        _http._tcp services.
         """
         try:
+            # Initial burst: 3 rapid re-announcements to ensure visibility
+            for _ in range(3):
+                await asyncio.sleep(3)
+                await self._refresh_mdns_services()
+
+            # Steady-state: re-announce every 30 seconds
             while True:
-                await asyncio.sleep(60)
-                if self._zeroconf and self._service_info:
-                    try:
-                        await asyncio.to_thread(
-                            self._zeroconf.update_service, self._service_info
-                        )
-                    except Exception as e:
-                        logger.debug("mDNS refresh: %s", e)
+                await asyncio.sleep(30)
+                await self._refresh_mdns_services()
         except asyncio.CancelledError:
             pass
+
+    async def _refresh_mdns_services(self) -> None:
+        """Re-announce both mDNS services."""
+        if not self._zeroconf:
+            return
+        for svc in (self._service_info, self._http_service_info):
+            if svc:
+                try:
+                    await asyncio.to_thread(self._zeroconf.update_service, svc)
+                except Exception as e:
+                    logger.debug("mDNS refresh failed for %s: %s", svc.name, e)
 
     async def _unregister_mdns(self) -> None:
         """Unregister mDNS services."""

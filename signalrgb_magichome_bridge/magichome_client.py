@@ -1,46 +1,89 @@
-"""Persistent async TCP client for Magic Home 0xA3 controllers.
+"""Persistent async client for Magic Home addressable LED controllers.
 
-Manages connection lifecycle, frame throttling, and auto-reconnect.
-Uses a "latest frame wins" strategy — only the most recent pixel data
-is ever sent, stale frames are discarded.
-
-All TCP writes are serialized through a single send loop to prevent
-concurrent writes from corrupting the stream.
+Uses flux_led's AIOWifiLedBulb as the transport layer, adding
+application-level throttling, fuzzy dedup, and breathing pauses on top.
+The BridgeBulb subclass sets SO_LINGER(0) on every connection (including
+auto-reconnects) to prevent ghost TCP connections from crashing the
+controller's limited socket pool.
 """
 
 import asyncio
+import json
 import logging
 import socket
+import struct
 import time
+from pathlib import Path
 from typing import Optional
 
+from flux_led.aiodevice import AIOWifiLedBulb
+from flux_led.base_device import DeviceUnavailableException
+
 from .protocol import (
-    build_power_off,
-    build_power_on,
-    build_state_query,
-    build_zone_change,
+    bytes_to_rgb_list,
     downsample_to_zones,
-    parse_state_response,
-    wrap_message,
+    reorder_pixels,
 )
 
 logger = logging.getLogger(__name__)
 
+_ZONE_CACHE = Path.home() / ".signalrgb-bridge-zones.json"
+
+
+class BridgeBulb(AIOWifiLedBulb):
+    """AIOWifiLedBulb with SO_LINGER(0) for safe disconnects.
+
+    Overrides _async_connect() to set SO_LINGER(0) + TCP_NODELAY after
+    every connection (initial + auto-reconnect), preventing ghost TCP
+    connections that crash the controller's limited socket pool.
+    """
+
+    def __init__(self, ipaddr: str, port: int = 0, **kwargs):
+        super().__init__(ipaddr, port=port, **kwargs)
+        self.last_connect_time: float = 0.0
+
+    async def _async_connect(self) -> None:
+        """Connect and set SO_LINGER(0) + TCP_NODELAY on the socket."""
+        await super()._async_connect()
+        self.last_connect_time = time.monotonic()
+        if self._aio_protocol and self._aio_protocol.transport:
+            sock = self._aio_protocol.transport.get_extra_info("socket")
+            if sock:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                # Immediate RST on close — prevents ghost TCP connections
+                # from crashing the controller on rapid bridge restarts.
+                sock.setsockopt(
+                    socket.SOL_SOCKET, socket.SO_LINGER,
+                    struct.pack('ii', 1, 0),
+                )
+
 
 class MagicHomeClient:
-    def __init__(self, host: str, port: int = 5577, max_fps: int = 30):
+    def __init__(self, host: str, port: int = 5577, max_fps: int = 30,
+                 color_order: str = "auto"):
         self._host = host
         self._port = port
         self._max_fps = max_fps
         self._min_interval = 1.0 / max_fps if max_fps > 0 else 0.033
 
+        # Proactive throttle: auto-decelerate during sustained animation.
+        # First few frames go at max FPS (responsive to color changes),
+        # then progressively slower to protect the controller.
+        # On dedup (static color): reset to fast mode instantly.
+        self._send_interval: float = self._min_interval
+        self._consecutive_sends: int = 0         # non-dedup frames in a row
+        self._throttle_after: int = 8            # frames before slowing down
+        self._throttled_interval: float = 0.5    # 2 FPS during sustained animation
+
         # Controller point count (auto-detected from pixels_per_segment)
         self._num_points: int = 0
+        # Color byte order: "auto" defaults to GRB (most addressable strips use GRB).
+        # detect_zones() may refine this based on the IC type.
+        self._color_order_cfg: str = color_order
+        self._color_order: str = "GRB" if color_order == "auto" else color_order
 
-        self._reader: Optional[asyncio.StreamReader] = None
-        self._writer: Optional[asyncio.StreamWriter] = None
-        self._counter: int = 0
-        self._connected: bool = False
+        # flux_led transport
+        self._bulb: Optional[BridgeBulb] = None
 
         # Frame buffer (latest-wins)
         self._frame_pixels: Optional[bytes] = None
@@ -48,16 +91,33 @@ class MagicHomeClient:
         self._frame_dirty: bool = False
         self._frame_event = asyncio.Event()
 
-        # Command queue for power/state commands (serialized with frames)
-        self._command_queue: asyncio.Queue = asyncio.Queue(maxsize=4)
+        # Deduplication: skip sending if frame data hasn't changed enough.
+        # Fuzzy threshold prevents sustained streaming during slow animations
+        # (e.g. rainbow) where downsampled frames differ by only a few values.
+        self._last_sent_pixels: Optional[bytes] = None
+        self.frames_skipped_dedup: int = 0
+        self._dedup_threshold: int = 50   # per-channel max diff to consider "same"
 
         # Reconnect backoff
         self._reconnect_delay: float = 1.0
         self._max_reconnect_delay: float = 8.0
 
         # Post-reconnect cooldown: wait before sending frames
-        self._reconnect_time: float = 0.0
-        self._reconnect_cooldown: float = 0.5  # seconds
+        self._reconnect_cooldown: float = 3.0  # seconds
+        self._next_retry_time: float = 0.0
+
+        # Breathing pauses: the ESP8266 TCP stack accumulates state with
+        # every frame. Shorter active bursts + longer pauses prevent
+        # cumulative stress buildup. At 2 FPS: 15 frames = 7.5s active,
+        # then 3s silence = 29% recovery ratio.
+        self._breathing_every: int = 15      # frames between breathing pauses
+        self._breathing_duration: float = 3.0  # seconds to pause
+        self._frames_since_breath: int = 0   # frames since last breathing pause
+
+        self._health_status: str = "unknown"  # healthy/breathing/error
+
+        # Track consecutive dedup hits for stats
+        self._consecutive_dedup: int = 0
 
         # Lifecycle
         self._send_task: Optional[asyncio.Task] = None
@@ -71,50 +131,124 @@ class MagicHomeClient:
 
     @property
     def connected(self) -> bool:
-        return self._connected
+        return self._bulb is not None and bool(self._bulb.available)
 
-    async def connect(self) -> bool:
-        """Establish TCP connection with TCP_NODELAY."""
+    @property
+    def health_status(self) -> str:
+        return self._health_status
+
+    # IC types whose native LED order is GRB (covers most addressable strips)
+    _GRB_IC_NAMES = frozenset({
+        "WS2812B", "WS2812", "WS2811", "WS2815", "WS2813",
+        "SK6812", "SK6812RGBW", "SK6813",
+    })
+
+    def _load_zone_cache(self) -> bool:
+        """Load cached zone detection results if they match current host."""
         try:
-            self._reader, self._writer = await asyncio.wait_for(
-                asyncio.open_connection(self._host, self._port),
-                timeout=5.0,
+            if not _ZONE_CACHE.exists():
+                return False
+            data = json.loads(_ZONE_CACHE.read_text(encoding="utf-8"))
+            if data.get("host") != self._host:
+                return False
+            self._num_points = data.get("num_points", 0)
+            if self._color_order_cfg == "auto":
+                self._color_order = data.get("color_order", "GRB")
+            logger.info(
+                "Zone cache: %d points, color_order=%s (delete %s to re-detect)",
+                self._num_points, self._color_order, _ZONE_CACHE,
             )
-            # Disable Nagle's algorithm for low-latency sends
-            sock = self._writer.transport.get_extra_info("socket")
-            if sock:
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-
-            self._connected = True
-            self._reconnect_delay = 1.0
-            self._reconnect_time = time.monotonic()
-            logger.info("Connected to Magic Home at %s:%d", self._host, self._port)
             return True
-        except (OSError, asyncio.TimeoutError) as e:
-            logger.warning("Failed to connect to %s:%d: %s", self._host, self._port, e)
-            self._connected = False
+        except Exception:
             return False
 
-    async def disconnect(self) -> None:
-        """Close the TCP connection."""
-        self._connected = False
-        if self._writer:
-            try:
-                self._writer.close()
-                await self._writer.wait_closed()
-            except OSError:
-                pass
-            self._writer = None
-            self._reader = None
-        logger.info("Disconnected from Magic Home")
+    def _save_zone_cache(self) -> None:
+        """Save zone detection results for faster restarts."""
+        try:
+            data = {
+                "host": self._host,
+                "num_points": self._num_points,
+                "color_order": self._color_order,
+            }
+            _ZONE_CACHE.write_text(
+                json.dumps(data, indent=2), encoding="utf-8",
+            )
+        except Exception as e:
+            logger.warning("Failed to save zone cache: %s", e)
+
+    async def _create_bulb(self) -> None:
+        """Create BridgeBulb and run async_setup (protocol detection + config)."""
+        self._bulb = BridgeBulb(self._host, port=self._port)
+        await self._bulb.async_setup(lambda: None)
+        logger.info("Connected to Magic Home at %s:%d", self._host, self._port)
+
+    async def detect_zones(self) -> bool:
+        """Auto-detect controller point count and color order.
+
+        Uses cached results when available to avoid creating an extra TCP
+        connection that can overwhelm the controller on rapid restarts.
+        Falls back to live detection via flux_led. On live detection, the
+        bulb stays alive as the permanent transport (no close + reopen).
+        """
+        if self._load_zone_cache():
+            return True
+
+        try:
+            await self._create_bulb()
+            self._num_points = self._bulb.pixels_per_segment or 0
+
+            # Detect color order from IC type (only if set to "auto")
+            ic_name = self._bulb.ic_type or ""
+
+            if self._color_order_cfg == "auto":
+                if ic_name:
+                    # Normalize: "WS2812B" from "WS2812B (GRB)" etc.
+                    ic_base = ic_name.split("(")[0].split("/")[0].strip().upper()
+                    if ic_base in self._GRB_IC_NAMES:
+                        self._color_order = "GRB"
+                elif self._num_points > 0:
+                    # IC unknown but controller is addressable — almost
+                    # certainly GRB (WS2812B is the dominant IC).
+                    self._color_order = "GRB"
+
+            logger.info(
+                "Controller config: %d points, %d segments, IC=%s, color_order=%s",
+                self._num_points, self._bulb.segments or 0,
+                ic_name or "unknown", self._color_order,
+            )
+            self._save_zone_cache()
+            return True
+        except Exception as e:
+            logger.warning("Zone detection failed: %s (will send raw pixels)", e)
+            if self._bulb:
+                try:
+                    await self._bulb.async_stop()
+                except Exception:
+                    pass
+            self._bulb = None
+            return False
 
     async def start(self) -> None:
-        """Connect and start the background send loop."""
+        """Connect (if needed), probe controller, and start the background send loop."""
         self._running = True
-        self._command_queue = asyncio.Queue(maxsize=4)
-        await self.connect()
+
+        # If detect_zones() already connected, reuse the bulb.
+        # Otherwise create a new one (e.g. cache hit, or detection skipped).
+        if self._bulb is None:
+            try:
+                await self._create_bulb()
+            except Exception as e:
+                logger.warning(
+                    "Initial connection failed: %s — will retry in background", e,
+                )
+
+        # Sync num_points from bulb if not already set (e.g. cache was used)
+        if self._bulb and self._num_points == 0:
+            self._num_points = self._bulb.pixels_per_segment or 0
+
         self._send_task = asyncio.create_task(self._send_loop())
-        logger.info("MagicHome client started (max %d FPS)", self._max_fps)
+        logger.info("MagicHome client started (max %d FPS, breathing every %d frames)",
+                     self._max_fps, self._breathing_every)
 
     async def stop(self) -> None:
         """Stop send loop and disconnect."""
@@ -127,7 +261,28 @@ class MagicHomeClient:
             except asyncio.CancelledError:
                 pass
             self._send_task = None
-        await self.disconnect()
+        if self._bulb:
+            try:
+                await self._bulb.async_stop()
+            except Exception:
+                pass
+            self._bulb = None
+        logger.info("Disconnected from Magic Home")
+
+    def _pixels_similar(self, a: bytes, b: bytes) -> bool:
+        """Check if two pixel buffers are similar enough to skip sending.
+
+        Returns True if no single byte differs by more than _dedup_threshold.
+        This filters out gradual animation shifts (rainbow) while still
+        responding instantly to deliberate color changes.
+        """
+        if len(a) != len(b):
+            return False
+        threshold = self._dedup_threshold
+        for i in range(len(a)):
+            if abs(a[i] - b[i]) > threshold:
+                return False
+        return True
 
     def update_frame(self, pixel_data: bytes, num_pixels: int) -> None:
         """Update frame buffer with new pixel data. Non-blocking, latest-wins."""
@@ -141,13 +296,27 @@ class MagicHomeClient:
                         num_pixels, len(pixel_data))
 
     async def _send_loop(self) -> None:
-        """Background loop: send commands and frames, all serialized."""
+        """Background loop: send frames with throttle, dedup, and breathing pauses.
+
+        The ESP8266 TCP stack accumulates state with every frame sent. After
+        ~30 frames it starts to silently freeze. Breathing pauses (keep TCP
+        open, just stop sending for 1s) give the lwIP stack time to drain
+        buffers and free memory — proven more effective than reactive health
+        monitoring which adds TCP load to an already struggling controller.
+
+        Strategy:
+        - First few frames: send at max FPS (instant response to changes)
+        - After sustained sends: auto-throttle to 2 FPS
+        - Every 30 frames: breathing pause (1s, TCP stays open)
+        - On dedup (static color): reset to fast mode + reset breath counter
+        - On TCP error: back off heavily
+        """
         while self._running:
-            # Wait for a new frame or timeout at frame interval
+            # Wait for a new frame or timeout at current send interval
             try:
                 await asyncio.wait_for(
                     self._frame_event.wait(),
-                    timeout=self._min_interval,
+                    timeout=self._send_interval,
                 )
             except asyncio.TimeoutError:
                 pass
@@ -157,164 +326,174 @@ class MagicHomeClient:
             if not self._running:
                 break
 
-            # Ensure connected
-            if not self._connected:
-                await self._reconnect()
-                if not self._connected:
+            # Ensure bulb exists (create on first run or after fatal error)
+            if self._bulb is None:
+                try:
+                    await self._create_bulb()
+                    # Sync num_points from bulb if needed
+                    if self._num_points == 0:
+                        self._num_points = self._bulb.pixels_per_segment or 0
+                except Exception:
+                    await asyncio.sleep(self._reconnect_delay)
+                    self._reconnect_delay = min(
+                        self._reconnect_delay * 2, self._max_reconnect_delay,
+                    )
                     continue
 
-            # Process any queued commands FIRST (power on/off)
-            commands_sent = 0
-            while not self._command_queue.empty() and commands_sent < 2:
-                try:
-                    cmd_inner = self._command_queue.get_nowait()
-                    success = await self._send_wrapped(cmd_inner)
-                    if not success:
-                        await self._reconnect()
-                        break
-                    commands_sent += 1
-                    # Small delay between command and next send
-                    await asyncio.sleep(0.05)
-                except asyncio.QueueEmpty:
-                    break
+            # If bulb is disconnected, respect backoff before retry.
+            # Auto-reconnect happens inside async_set_zones when we send.
+            if not self._bulb.available:
+                now = time.monotonic()
+                if now < self._next_retry_time:
+                    continue
 
             # Skip frame if no dirty data
             if not self._frame_dirty or self._frame_pixels is None:
                 continue
 
-            # Skip frame if we just reconnected (give controller time)
-            now = time.monotonic()
-            if now - self._reconnect_time < self._reconnect_cooldown:
-                continue
+            # Skip frame if we just (re)connected (give controller time)
+            if self._bulb.last_connect_time > 0:
+                now = time.monotonic()
+                if now - self._bulb.last_connect_time < self._reconnect_cooldown:
+                    continue
 
             # Grab current frame data
             pixels = self._frame_pixels
             num_pixels = self._frame_num_pixels
             self._frame_dirty = False
 
-            # Throttle: ensure minimum interval between sends
+            # Throttle: ensure minimum interval between sends (send-END timing)
+            now = time.monotonic()
             elapsed = now - self.last_send_time
-            if elapsed < self._min_interval:
-                await asyncio.sleep(self._min_interval - elapsed)
+            if elapsed < self._send_interval:
+                await asyncio.sleep(self._send_interval - elapsed)
 
-            # Build and send the packet
-            if not self._connected:
+            if self._bulb is None:
                 continue
+
+            # Reorder color bytes if controller expects non-RGB order
+            if self._color_order != "RGB":
+                pixels = reorder_pixels(pixels, num_pixels, self._color_order)
 
             # Downsample to controller points if configured
             if self._num_points > 0 and num_pixels != self._num_points:
-                zone_pixels = downsample_to_zones(
+                final_pixels = downsample_to_zones(
                     pixels, num_pixels, self._num_points,
                 )
-                inner = build_zone_change(zone_pixels, self._num_points)
+                final_count = self._num_points
             else:
-                inner = build_zone_change(pixels, num_pixels)
-            success = await self._send_wrapped(inner)
-            if success:
+                final_pixels = pixels
+                final_count = num_pixels
+
+            # Fuzzy dedup: skip if pixels haven't changed enough.
+            if (
+                self._last_sent_pixels is not None
+                and self._pixels_similar(final_pixels, self._last_sent_pixels)
+            ):
+                self.frames_skipped_dedup += 1
+                self._consecutive_dedup += 1
+                # Do NOT reset throttle or breath counters here. During
+                # animations, fuzzy dedup fires between real sends (~16:1
+                # ratio). Resetting on every dedup prevents throttle and
+                # breathing from ever triggering. These counters must only
+                # track actual TCP sends.
+                continue
+
+            self._consecutive_dedup = 0
+
+            # Quiet-period detection: if no frame was sent for 2+ seconds,
+            # the color was static (all dedup). Reset to fast mode so the
+            # first frames of a new animation are responsive.
+            if self.last_send_time > 0:
+                quiet = time.monotonic() - self.last_send_time
+                if quiet > 2.0:
+                    self._consecutive_sends = 0
+                    self._send_interval = self._min_interval
+                    self._frames_since_breath = 0
+
+            # Breathing pause: the ESP8266 lwIP stack accumulates state with
+            # every TCP message. After ~30 frames it starts to choke. Pausing
+            # for 1s (keeping TCP open!) gives it time to drain buffers.
+            # No extra TCP traffic — just silence. This is the #1 stability
+            # mechanism, proven more effective than reactive health monitoring.
+            if self._frames_since_breath >= self._breathing_every:
+                self._frames_since_breath = 0
+                self._health_status = "breathing"
+                logger.info(
+                    "Breathing pause: %d frames sent, pausing %.1fs",
+                    self.frames_sent, self._breathing_duration,
+                )
+                await asyncio.sleep(self._breathing_duration)
+                self._health_status = "healthy"
+
+            # Send frame via flux_led
+            try:
+                rgb_list = bytes_to_rgb_list(final_pixels, final_count)
+                await self._bulb.async_set_zones(rgb_list)
+
+                self._last_sent_pixels = final_pixels
                 self.frames_sent += 1
+                self._frames_since_breath += 1
                 self.last_send_time = time.monotonic()
+                self._reconnect_delay = 1.0
+                self._next_retry_time = 0.0
+                self._health_status = "healthy"
+
+                # Proactive throttle: slow down during sustained animation
+                self._consecutive_sends += 1
+                if self._consecutive_sends >= self._throttle_after:
+                    self._send_interval = self._throttled_interval
+
                 if self.frames_sent <= 3 or self.frames_sent % 300 == 0:
-                    logger.info("MH: frame #%d sent (%d pixels, %d bytes over TCP)",
-                                self.frames_sent, num_pixels, len(inner) + 10)
-            else:
+                    logger.info(
+                        "MH: frame #%d sent (%d pixels, "
+                        "interval %.0fms, breath_in=%d, dedup_skipped=%d)",
+                        self.frames_sent, final_count,
+                        self._send_interval * 1000,
+                        self._breathing_every - self._frames_since_breath,
+                        self.frames_skipped_dedup,
+                    )
+            except (DeviceUnavailableException, OSError,
+                    asyncio.TimeoutError, ValueError) as e:
                 self.send_errors += 1
-                logger.warning("MH: frame send FAILED (error #%d)", self.send_errors)
-                await self._reconnect()
-
-    async def _send_raw(self, data: bytes) -> bool:
-        """Send raw bytes over TCP. Returns True on success."""
-        if not self._writer or not self._connected:
-            return False
-        try:
-            self._writer.write(data)
-            await self._writer.drain()
-            return True
-        except OSError as e:
-            logger.warning("TCP send failed: %s", e)
-            self._connected = False
-            return False
-
-    async def _send_wrapped(self, inner: bytes) -> bool:
-        """Wrap inner message with protocol header, send over TCP."""
-        counter = self._next_counter()
-        packet = wrap_message(counter, inner)
-        return await self._send_raw(packet)
-
-    async def _reconnect(self) -> None:
-        """Reconnect with exponential backoff."""
-        if self._connected:
-            return
-        await self.disconnect()
-        logger.info(
-            "Reconnecting in %.1fs to %s:%d...",
-            self._reconnect_delay, self._host, self._port,
-        )
-        await asyncio.sleep(self._reconnect_delay)
-        success = await self.connect()
-        if not success:
-            self._reconnect_delay = min(
-                self._reconnect_delay * 2,
-                self._max_reconnect_delay,
-            )
-
-    def _next_counter(self) -> int:
-        """Return current counter value and increment (wrapping 0-255)."""
-        val = self._counter
-        self._counter = (self._counter + 1) & 0xFF
-        return val
+                self._frames_since_breath = 0
+                self._consecutive_sends = 0
+                self._health_status = "error"
+                # Heavy backoff on error
+                self._send_interval = 2.0
+                self._next_retry_time = time.monotonic() + self._reconnect_delay
+                self._reconnect_delay = min(
+                    self._reconnect_delay * 2, self._max_reconnect_delay,
+                )
+                logger.warning(
+                    "MH: frame send FAILED (error #%d): %s(%s) — backoff to %.0fms",
+                    self.send_errors, type(e).__name__, e,
+                    self._send_interval * 1000,
+                )
 
     async def power_on(self) -> bool:
-        """Queue power-on command (sent by the send loop)."""
-        logger.info("Queueing power ON")
+        """Turn on the controller."""
+        if not self._bulb:
+            logger.warning("Cannot power on: not connected")
+            return False
+        logger.info("Sending power ON")
         try:
-            self._command_queue.put_nowait(build_power_on())
-            self._frame_event.set()  # wake up send loop
+            await self._bulb.async_turn_on()
             return True
-        except asyncio.QueueFull:
-            logger.warning("Command queue full, dropping power ON")
+        except (DeviceUnavailableException, OSError, asyncio.TimeoutError) as e:
+            logger.warning("Power on failed: %s", e)
             return False
 
     async def power_off(self) -> bool:
-        """Queue power-off command (sent by the send loop)."""
-        logger.info("Queueing power OFF")
+        """Turn off the controller."""
+        if not self._bulb:
+            logger.warning("Cannot power off: not connected")
+            return False
+        logger.info("Sending power OFF")
         try:
-            self._command_queue.put_nowait(build_power_off())
-            self._frame_event.set()  # wake up send loop
+            await self._bulb.async_turn_off()
             return True
-        except asyncio.QueueFull:
-            logger.warning("Command queue full, dropping power OFF")
+        except (DeviceUnavailableException, OSError, asyncio.TimeoutError) as e:
+            logger.warning("Power off failed: %s", e)
             return False
 
-    async def detect_zones(self) -> bool:
-        """Auto-detect controller point count using flux_led.
-
-        The controller's pixels_per_segment is the number of addressable
-        "points". Each point maps to a segment of physical LEDs.
-        For example: 10 points with 300 physical LEDs = 30 LEDs per point.
-        """
-        try:
-            from flux_led.aiodevice import AIOWifiLedBulb
-            bulb = AIOWifiLedBulb(self._host)
-            await bulb.async_setup(lambda: None)
-            self._num_points = bulb.pixels_per_segment
-            logger.info(
-                "Controller config: %d points (pixels_per_segment), %d segments",
-                self._num_points, bulb.segments,
-            )
-            return True
-        except Exception as e:
-            logger.warning("Zone detection failed: %s (will send raw pixels)", e)
-            return False
-
-    async def query_state(self) -> Optional[dict]:
-        """Send state query, read and parse the 14-byte response."""
-        if not self._connected:
-            return None
-        if not await self._send_wrapped(build_state_query()):
-            return None
-        try:
-            data = await asyncio.wait_for(self._reader.read(14), timeout=2.0)
-            return parse_state_response(data)
-        except (asyncio.TimeoutError, OSError) as e:
-            logger.warning("State query failed: %s", e)
-            return None
