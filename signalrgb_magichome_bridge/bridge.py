@@ -11,6 +11,7 @@ Usage:
 
 import asyncio
 import logging
+from logging.handlers import RotatingFileHandler
 import sys
 from typing import Optional
 
@@ -156,7 +157,9 @@ def setup_logging(level: str) -> None:
     from pathlib import Path
     log_file = Path.home() / "signalrgb-bridge.log"
     handlers: list[logging.Handler] = [
-        logging.FileHandler(log_file, encoding="utf-8"),
+        RotatingFileHandler(
+            log_file, maxBytes=1_000_000, backupCount=1, encoding="utf-8"
+        ),
     ]
     # Also log to console when stderr is available (not tray mode)
     try:
