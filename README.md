@@ -10,6 +10,12 @@ Magic Home's addressable WiFi controllers (model 0xA3) are cheap and widely avai
 
 ---
 
+## Prerequisites
+
+Before using the bridge, connect your Magic Home controller to your WiFi network using the **Magic Home app**. The controller needs to be on the network so the bridge can reach it.
+
+---
+
 ## Quick Start
 
 **Install** the bridge, **find** your controller, **run** it. Three steps, two minutes.
