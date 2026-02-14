@@ -12,6 +12,7 @@ Usage:
 import asyncio
 import logging
 from logging.handlers import RotatingFileHandler
+import os
 import sys
 from typing import Optional
 
@@ -148,22 +149,48 @@ class Bridge:
             await self.stop()
 
 
-def _windows_rotator(source: str, dest: str) -> None:
-    """Rotate log files on Windows where open files can't be renamed.
+class _WindowsSafeRotatingHandler(RotatingFileHandler):
+    """RotatingFileHandler that handles Windows file locking and UTF-8 BOM.
 
-    Deletes the destination first to avoid WinError 32 when another
-    process (tail, editor) holds the backup file open.  Falls back to
-    truncation if deletion also fails.
+    Fixes two issues with the standard RotatingFileHandler on Windows:
+    1. doRollover() has an unguarded os.remove() on the backup file that
+       raises OSError if antivirus/indexer/editor holds a lock — this
+       silently drops all subsequent log records.
+    2. Log files without a UTF-8 BOM cause Notepad to misdetect the
+       encoding as UTF-16, showing garbled Chinese characters.
     """
-    import os
-    try:
-        if os.path.exists(dest):
-            os.remove(dest)
-        os.rename(source, dest)
-    except OSError:
-        # Last resort: truncate the current log so we don't grow unbounded
-        with open(source, "w", encoding="utf-8"):
+
+    def _open(self):
+        stream = super()._open()
+        # Write UTF-8 BOM at start of new/empty files so Notepad
+        # correctly detects the encoding instead of guessing UTF-16.
+        try:
+            if stream.tell() == 0:
+                stream.write("\ufeff")
+        except (OSError, ValueError):
             pass
+        return stream
+
+    def doRollover(self):
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+        if self.backupCount > 0:
+            dfn = self.rotation_filename(
+                "%s.%d" % (self.baseFilename, 1)
+            )
+            try:
+                if os.path.exists(dfn):
+                    os.remove(dfn)
+                os.rename(self.baseFilename, dfn)
+            except OSError:
+                # Backup file is locked — truncate instead of rotating
+                try:
+                    open(self.baseFilename, "wb").close()
+                except OSError:
+                    pass
+        if not self.delay:
+            self.stream = self._open()
 
 
 def setup_logging(level: str) -> None:
@@ -174,11 +201,14 @@ def setup_logging(level: str) -> None:
     # Always log to a file so tray-mode output isn't lost
     from pathlib import Path
     log_file = Path.home() / "signalrgb-bridge.log"
-    file_handler = RotatingFileHandler(
-        log_file, maxBytes=1_000_000, backupCount=1, encoding="utf-8"
-    )
     if sys.platform == "win32":
-        file_handler.rotator = _windows_rotator
+        file_handler = _WindowsSafeRotatingHandler(
+            log_file, maxBytes=1_000_000, backupCount=1, encoding="utf-8"
+        )
+    else:
+        file_handler = RotatingFileHandler(
+            log_file, maxBytes=1_000_000, backupCount=1, encoding="utf-8"
+        )
     handlers: list[logging.Handler] = [file_handler]
     # Also log to console when stderr is available (not tray mode)
     try:
